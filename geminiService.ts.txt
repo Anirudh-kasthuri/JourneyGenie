@@ -1,0 +1,231 @@
+
+
+import { GoogleGenAI, Type } from "@google/genai";
+import { TripFormData, TripPlan, ClimateAnalysis } from '../types';
+import config from "../config";
+
+const climateSchema = {
+  type: Type.OBJECT,
+  properties: {
+    isIdeal: { type: Type.BOOLEAN, description: "True if the dates are good for travel, false if there are significant weather concerns." },
+    analysis: { type: Type.STRING, description: "A brief, one-sentence analysis of the climate for the given dates and locations. E.g., 'This period is peak monsoon season in Mumbai, expect heavy rain.' or 'This is an excellent time to visit.'" },
+    suggestedStartDate: { type: Type.STRING, description: "A suggested start date in YYYY-MM-DD format if the climate is not ideal. Omit if ideal." },
+    suggestedEndDate: { type: Type.STRING, description: "A suggested end date in YYYY-MM-DD format if the climate is not ideal. Omit if ideal." },
+  },
+  required: ["isIdeal", "analysis"],
+};
+
+const getGenAI = () => {
+  const apiKey = config.geminiApiKey;
+  if (!apiKey) {
+    throw new Error("Gemini API Key is not set. Please follow the instructions in `config.ts` and ensure VITE_GEMINI_API_KEY is in your .env.local file.");
+  }
+  return new GoogleGenAI({ apiKey });
+}
+
+export const analyzeClimateForTrip = async (formData: Pick<TripFormData, 'destinations' | 'startDate' | 'endDate'>): Promise<ClimateAnalysis> => {
+  const ai = getGenAI();
+  const destinationsText = formData.destinations.join(', ');
+
+  let prompt;
+  if (formData.endDate) {
+    prompt = `
+      Analyze the climate for a trip to the following destinations: ${destinationsText}.
+      The proposed travel dates are from ${formData.startDate} to ${formData.endDate}.
+
+      Based on typical weather patterns (e.g., monsoon, extreme heat, winter storms), determine if this is an ideal time to visit.
+      - If it is a good time, set isIdeal to true.
+      - If it is not ideal, set isIdeal to false and suggest a better travel window (a similar duration) later in the year.
+      - The analysis text should be a single, concise sentence.
+      - Dates must be in YYYY-MM-DD format.
+
+      Structure your response as a single JSON object matching the provided schema. Do not include any markdown formatting.
+    `;
+  } else {
+    prompt = `
+      Analyze a trip to ${destinationsText}, starting on ${formData.startDate}. The user has not provided an end date. Your task is to suggest an optimal trip duration.
+
+      Follow these steps:
+      1.  Determine the ideal number of days required to comfortably visit the specified destination(s), considering their size, attractions, and logical travel flow.
+      2.  Calculate a 'suggestedEndDate' based on this optimal duration.
+      3.  Set 'isIdeal' to 'false'. This is important as it will prompt the user to confirm your suggested dates.
+      4.  Write a concise, one-sentence 'analysis' that explains your duration recommendation. For example: "A 7-day trip is ideal to fully experience the destinations. The weather during this period is excellent."
+      5.  The 'suggestedStartDate' should be the date the user provided: ${formData.startDate}.
+      
+      Ensure all dates in your response are in YYYY-MM-DD format.
+      The entire response must be a single JSON object matching the schema, with no markdown formatting.
+    `;
+  }
+
+
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: climateSchema,
+      },
+    });
+    
+    const jsonText = response.text.trim();
+    return JSON.parse(jsonText);
+
+  } catch (error) {
+    console.error("Error analyzing climate:", error);
+    // Fail gracefully: assume the dates are fine so the user can proceed.
+    return {
+      isIdeal: true,
+      analysis: "Could not perform climate check.",
+    };
+  }
+};
+
+const itinerarySchema = {
+  type: Type.OBJECT,
+  properties: {
+    destination: { type: Type.STRING, description: "A creative and descriptive overall title for the multi-city trip, e.g., 'An Italian Adventure: Rome & Florence'." },
+    totalDays: { type: Type.INTEGER, description: "Total number of days for the trip." },
+    estimatedBudget: { type: Type.STRING, description: "A descriptive estimated budget for the trip in Indian Rupees (₹), e.g., '₹80,000 - ₹1,20,000'." },
+    dailyPlans: {
+      type: Type.ARRAY,
+      description: "A detailed plan for each day of the trip.",
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          day: { type: Type.INTEGER, description: "The day number, starting from 1." },
+          date: { type: Type.STRING, description: "The full date for this day's plan, e.g., 'Friday, March 15, 2024'." },
+          title: { type: Type.STRING, description: "A catchy title for the day, e.g., 'Arrival and Roman Wonders'." },
+          location: { type: Type.STRING, description: "The city where this day's activities take place, e.g., 'Rome, Italy'." },
+          travelInfo: {
+            type: Type.OBJECT,
+            description: "Information about travel to a new city on this day. Only include this for days that involve traveling between destination cities.",
+            properties: {
+                mode: { type: Type.STRING, description: "The recommended mode of transport (e.g., 'Train', 'Bus', 'Flight', 'Car')." },
+                travelTime: { type: Type.STRING, description: "The estimated duration of the journey, e.g., 'Approx. 4 hours 30 minutes'." },
+                details: { type: Type.STRING, description: "A brief, one-sentence summary explaining the choice, including factors like speed, cost, or convenience. E.g., 'High-speed train is the fastest option (approx. 4.5 hours) and offers scenic views, typically costing around ₹1500.'" },
+            }
+          },
+          localEtiquette: {
+            type: Type.ARRAY,
+            description: "A list of 2-3 key local etiquette tips. This section should only be included ONCE per city, on the first day the itinerary covers that city.",
+            items: {
+                type: Type.STRING,
+                description: "A single etiquette tip, e.g., 'Greetings are important; a simple 'Buongiorno' (good morning) goes a long way.'"
+            }
+          },
+          itinerary: {
+            type: Type.ARRAY,
+            description: "A schedule of activities for the day.",
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                time: { type: Type.STRING, description: "The time of the activity, e.g., '9:00 AM'." },
+                activity: { type: Type.STRING, description: "The name of the activity, e.g., 'Breakfast at a local café'." },
+                location: { type: Type.STRING, description: "The location of the activity, e.g., 'Café de Flore'." },
+                description: { type: Type.STRING, description: "A brief, engaging one-sentence description of the activity." },
+                coordinates: {
+                  type: Type.OBJECT,
+                  description: "The precise latitude and longitude for this location.",
+                  properties: {
+                    lat: { type: Type.NUMBER, description: "Latitude" },
+                    lng: { type: Type.NUMBER, description: "Longitude" },
+                  },
+                  required: ["lat", "lng"],
+                },
+              },
+              required: ["time", "activity", "location", "description", "coordinates"],
+            },
+          },
+          nearbyAttractions: {
+            type: Type.ARRAY,
+            description: "Suggestions for nearby attractions.",
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                name: { type: Type.STRING, description: "Name of the attraction." },
+                rating: { type: Type.NUMBER, description: "A rating out of 5, e.g., 4.8." },
+                description: { type: Type.STRING, description: "A brief one-sentence description of the attraction." },
+                 coordinates: {
+                  type: Type.OBJECT,
+                  description: "The precise latitude and longitude for this attraction.",
+                  properties: {
+                    lat: { type: Type.NUMBER, description: "Latitude" },
+                    lng: { type: Type.NUMBER, description: "Longitude" },
+                  },
+                  required: ["lat", "lng"],
+                },
+              },
+              required: ["name", "rating", "description", "coordinates"],
+            },
+          },
+        },
+        required: ["day", "date", "title", "location", "itinerary", "nearbyAttractions"],
+      },
+    },
+  },
+  required: ["destination", "totalDays", "estimatedBudget", "dailyPlans"],
+};
+
+export const generateItinerary = async (formData: TripFormData): Promise<TripPlan> => {
+  const ai = getGenAI();
+
+  const destinationsText = formData.destinations.join(', ');
+  const datePrompt = formData.endDate
+    ? `The trip takes place from ${formData.startDate} to ${formData.endDate}.`
+    : `The trip starts on ${formData.startDate}. Please determine an optimal trip duration based on the destinations and travel style.`;
+  
+  let preferencesPrompt = '';
+  if (formData.mustInclude) {
+    preferencesPrompt += `\nIMPORTANT: The user wants to be sure to include the following places or activities: ${formData.mustInclude}. Integrate them logically into the itinerary.`;
+  }
+  if (formData.dontInclude) {
+    preferencesPrompt += `\nIMPORTANT: The user wants to avoid the following places or types of places: ${formData.dontInclude}. Do not suggest them.`;
+  }
+
+
+  const prompt = `
+    You are an expert travel planner named JourneyGenie. Create a detailed, day-by-day travel itinerary for a trip starting from ${formData.startCity} and visiting the following destinations: ${destinationsText}.
+    ${datePrompt}
+    The traveler's budget is ${formData.budget}. The budget should be calculated and presented in Indian Rupees (₹). Their travel style is ${formData.travelStyle}.
+    ${preferencesPrompt}
+    
+    For each day, provide:
+    1. The city for that day's plan.
+    2. A full date and a catchy title.
+    3. A detailed schedule with time, activity, location, and a brief, engaging one-sentence description. For each activity, you MUST provide its precise geographical coordinates (latitude and longitude).
+    4. Three suggestions for nearby attractions with a name, a rating out of 5, and a short description. For each attraction, you MUST provide its precise geographical coordinates (latitude and longitude).
+    5. A creative and descriptive overall title for the entire trip.
+    6. For the *first day* in each new destination city, provide a 'localEtiquette' section with 2-3 brief, essential tips about local customs, greetings, or social norms. This field MUST be omitted for subsequent days in the same city.
+
+    **CRITICAL**: If a day involves traveling from one destination city to another (e.g., from Mumbai to Goa), you MUST provide travel information. To do this, simulate a search for available trains, buses, and flights for that route. In your analysis, consider factors like travel time, cost, and convenience. Recommend the single best option in the 'travelInfo' object for that day. The 'details' field should be a rich, one-sentence summary explaining the choice, for example: 'A high-speed train is recommended; it's the fastest option (approx. 4.5 hours) and offers scenic views, typically costing around ₹1500.' Include the mode of travel, estimated travel time, and the detailed reason. This 'travelInfo' object should ONLY be present on days with inter-city travel. For days with activities within the same city, this object MUST be omitted.
+
+    Structure your entire response as a single JSON object matching the provided schema. Do not include any markdown formatting like \`\`\`json.
+  `;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: itinerarySchema,
+      },
+    });
+
+    const jsonText = response.text.trim();
+    let parsedData = JSON.parse(jsonText);
+    
+    // Ensure the root object is the trip plan and add a unique ID
+    if (parsedData.trip) {
+        parsedData = parsedData.trip;
+    }
+    parsedData.id = `trip_${Date.now()}`;
+
+    return parsedData;
+
+  } catch (error) {
+    console.error("Error generating itinerary:", error);
+    throw new Error("Failed to generate itinerary. The model may be unable to provide a plan for the selected destination or options.");
+  }
+};
