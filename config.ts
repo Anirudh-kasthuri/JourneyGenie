@@ -11,4 +11,4 @@
 
 // This key enables the interactive route map feature.
 // FIX: Widened type to string to fix comparison error in App.tsx
-export const OPENROUTESERVICE_API_KEY: string = "5b3ce3597851110001cf624807b5f8412c07424ea9e7bbeaf34a28c8"; // Public trial key, replace with your own if needed.
+export const OPENROUTESERVICE_API_KEY: string = "paste here";
